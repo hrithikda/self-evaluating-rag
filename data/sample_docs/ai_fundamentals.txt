@@ -1,0 +1,29 @@
+Artificial Intelligence Fundamentals
+
+Artificial intelligence (AI) refers to the simulation of human intelligence processes by computer systems. These processes include learning, reasoning, and self-correction. Machine learning, a subset of AI, enables systems to automatically learn and improve from experience without being explicitly programmed. Deep learning, in turn, is a subset of machine learning that uses neural networks with multiple layers to model complex patterns in data.
+
+Neural Networks and Deep Learning
+
+A neural network is a series of algorithms that attempts to recognize underlying relationships in a set of data through a process that mimics the way the human brain operates. Artificial neural networks consist of input layers, hidden layers, and output layers. Each layer contains nodes (neurons) that are connected to nodes in adjacent layers through weighted edges. The process of training a neural network involves adjusting these weights through backpropagation and gradient descent to minimize prediction error.
+
+Backpropagation is a supervised learning algorithm used to train neural networks. It works by computing the gradient of the loss function with respect to each weight by applying the chain rule. The gradient is then used to update the weights in the direction that minimizes the loss. Modern deep learning frameworks like PyTorch and TensorFlow automate this process through automatic differentiation (autograd).
+
+Convolutional Neural Networks (CNNs) are specialized for processing grid-like data such as images. They use convolutional layers that apply learned filters across the input, pooling layers that reduce spatial dimensions, and fully connected layers for classification. CNNs have achieved human-level or superhuman performance on image recognition tasks.
+
+Recurrent Neural Networks (RNNs) and Long Short-Term Memory (LSTM) networks are designed to work with sequential data. LSTMs solve the vanishing gradient problem that plagued early RNNs by introducing gating mechanisms that control information flow. However, transformers have largely superseded RNNs for most sequence tasks.
+
+Transformers and Attention Mechanisms
+
+The transformer architecture, introduced in the 2017 paper "Attention Is All You Need" by Vaswani et al., revolutionized natural language processing. The core innovation is the self-attention mechanism, which allows each position in a sequence to attend to all other positions. This enables parallelization during training and captures long-range dependencies more effectively than RNNs. Modern large language models including GPT-4, Claude, Gemini, and Llama are all based on the transformer architecture.
+
+Supervised, Unsupervised, and Reinforcement Learning
+
+Supervised learning involves training a model on labeled data — pairs of inputs and desired outputs. Common tasks include classification (predicting a category) and regression (predicting a continuous value). Unsupervised learning works with unlabeled data to find hidden patterns or intrinsic structure. Clustering (k-means, DBSCAN) and dimensionality reduction (PCA, t-SNE, autoencoders) are common unsupervised techniques.
+
+Reinforcement learning (RL) trains agents to make decisions by interacting with an environment to maximize cumulative reward. Key algorithms include Q-learning, Deep Q-Networks (DQN), and Proximal Policy Optimization (PPO). Reinforcement Learning from Human Feedback (RLHF) is used to align large language models with human preferences, as pioneered by InstructGPT and subsequently used in Claude and ChatGPT.
+
+AI Safety and Alignment
+
+AI alignment refers to the challenge of ensuring AI systems behave in accordance with human values and intentions. Constitutional AI (CAI), developed by Anthropic, trains AI systems to follow a set of principles by using AI feedback to refine model behavior. Interpretability research aims to understand what computations occur inside neural networks — understanding features, circuits, and information flow is an active area of research at labs like Anthropic and DeepMind.
+
+Emergent capabilities in large language models are abilities that appear suddenly as model scale increases, such as few-shot learning, chain-of-thought reasoning, and in-context learning. These emergent behaviors are not explicitly trained and pose challenges for predicting and controlling model behavior.

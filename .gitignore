@@ -1,0 +1,29 @@
+# Environment
+.env
+*.env
+
+# Vector store (large binary files)
+chroma_db/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+.pytest_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Evaluation outputs
+evaluation/results*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

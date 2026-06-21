@@ -1,0 +1,37 @@
+ML Engineering and MLOps
+
+ML Engineering bridges data science and software engineering, focusing on building production-grade machine learning systems that are reliable, scalable, and maintainable. MLOps (Machine Learning Operations) is the set of practices that combines DevOps principles with machine learning workflows to automate and operationalize the ML lifecycle.
+
+The ML Production Lifecycle
+
+A production ML system consists of several interconnected stages: data ingestion and validation, feature engineering, model training and experimentation, model evaluation, deployment, monitoring, and retraining. Tools like Apache Airflow, Prefect, and Metaflow orchestrate these stages as DAGs (Directed Acyclic Graphs). Feature stores (Feast, Tecton, Hopsworks) centralize feature computation and serving, ensuring consistency between training and inference.
+
+Model versioning with tools like MLflow, Weights & Biases, and DVC enables reproducibility by tracking experiments, hyperparameters, metrics, and artifacts. Model registry stores approved model versions and their metadata, serving as the source of truth for what is deployed in production.
+
+Model Serving and Inference
+
+Model serving translates a trained model into an API that client applications can query. Common patterns include REST APIs (FastAPI, Flask), gRPC services (TorchServe, Triton Inference Server), and streaming endpoints (server-sent events for token streaming in LLMs). Latency and throughput are key metrics: p50/p95/p99 latency percentiles, requests per second, and GPU utilization.
+
+Triton Inference Server (NVIDIA) supports multiple frameworks (TensorRT, ONNX, PyTorch, TensorFlow) and enables concurrent model execution, dynamic batching, and model ensembles. vLLM is a high-throughput LLM inference engine using PagedAttention, which manages the KV-cache like OS virtual memory to dramatically reduce memory waste and increase throughput. TGI (Text Generation Inference by HuggingFace) and Ollama are other popular LLM serving solutions.
+
+Containerization and Infrastructure
+
+Docker containers package model code, dependencies, and runtime into portable units. Kubernetes orchestrates container deployment, scaling, and management at scale. GPU workloads typically run on cloud providers: AWS (p3, p4, g5 instances), GCP (A2, G2 with A100/L4 GPUs), and Azure (NC series). Auto-scaling policies adjust compute based on request volume, and spot/preemptible instances reduce costs for fault-tolerant batch workloads.
+
+For LLM applications, infrastructure considerations include: GPU memory capacity (A100 80GB is the standard for large model inference), KV-cache size limits effective context length at a given batch size, and network bandwidth between model shards in tensor parallelism configurations.
+
+Monitoring and Observability
+
+Production ML systems require monitoring at multiple layers: infrastructure metrics (CPU, GPU, memory, latency), model performance metrics (accuracy, F1, AUC on labeled samples or proxy metrics), and data distribution metrics (feature drift, input distribution shift). Tools include Prometheus + Grafana for infrastructure, Evidently AI and WhyLogs for data/model drift detection, and Langfuse or LangSmith for LLM-specific observability including prompt/response logging, token counts, and latency.
+
+For LLM applications, evaluation is particularly challenging because correctness is often subjective. LLM-as-judge frameworks use a powerful model (Claude Opus, GPT-4o) to score production outputs on dimensions like helpfulness, accuracy, safety, and groundedness. Online evaluation pipelines sample a percentage of production traffic and score it automatically.
+
+Retrieval System Engineering
+
+For RAG systems in production, document ingestion pipelines must handle PDFs, HTML, DOCX, and other formats reliably at scale. Chunking strategies (semantic chunking using embedding similarity, or hierarchical chunking preserving document structure) significantly impact retrieval quality. Incremental indexing (adding new documents without rebuilding the full index) and index sharding (partitioning by date, topic, or source) are important for large knowledge bases.
+
+Query latency in RAG systems includes embedding time (~10ms for MiniLM on CPU), ANN search time (~5-50ms depending on index size), LLM evaluation time (varies by model and batch size), and generation time (the dominant cost for LLM responses). Caching frequently asked queries at the vector or response level can dramatically reduce costs and latency in production systems.
+
+CI/CD for ML
+
+Continuous Integration for ML adds automated testing of data pipelines, model training, and evaluation to standard code CI. Continuous Delivery deploys model updates when evaluation metrics exceed a threshold. Common gates include: dataset validation (Great Expectations, Pandera), model evaluation against a holdout set, integration tests of the serving endpoint, and shadow mode comparison (routing a fraction of traffic to the new model without serving its responses). This ensures model regressions are caught before they impact users.

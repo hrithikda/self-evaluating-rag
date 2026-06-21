@@ -1,0 +1,33 @@
+Large Language Model Architectures
+
+Large Language Models (LLMs) are neural networks with billions of parameters trained on vast corpora of text. Modern LLMs are almost universally based on the transformer architecture. Leading examples include OpenAI's GPT-4, Anthropic's Claude family, Google's Gemini, and Meta's Llama series. These models have demonstrated remarkable capabilities in reasoning, code generation, creative writing, and complex question-answering.
+
+The Transformer Architecture in Depth
+
+A transformer processes input text as a sequence of tokens. The embedding layer converts tokens to dense vector representations. Positional encodings are added to inject information about token order. The core of the transformer is the multi-head self-attention mechanism, which computes weighted sums of value vectors based on query-key dot products. Multiple attention heads allow the model to attend to different aspects of the input simultaneously.
+
+The feed-forward network (FFN) in each transformer block applies two linear transformations with a non-linearity (typically GELU or SwiGLU). Layer normalization (RMSNorm in modern models) is applied before each sub-layer for training stability. Residual connections allow gradients to flow directly through the network, enabling training of very deep models. A 70-billion parameter model like Llama-3 has 80 transformer layers, 64 attention heads, and a hidden dimension of 8192.
+
+Grouped Query Attention (GQA) and Multi-Query Attention (MQA) reduce the KV-cache memory footprint by sharing key-value heads across multiple query heads. This enables faster inference at larger batch sizes. Sliding window attention (as in Mistral) reduces quadratic complexity of attention by limiting each token's attention span to a fixed window.
+
+Context Length and Positional Encodings
+
+Early transformers used learned absolute positional embeddings, limiting context to the length seen during training. Rotary Position Embedding (RoPE), used in Llama and many modern models, encodes relative position information by rotating query and key vectors. This provides better generalization to longer sequences and enables context window extension techniques like YaRN and LongRoPE. The context windows of leading models have expanded dramatically: GPT-4 Turbo supports 128K tokens; Gemini 1.5 Pro supports 1 million tokens; Claude's Sonnet and Opus models support 200K tokens.
+
+Training Large Language Models
+
+LLMs are pre-trained via next-token prediction (causal language modeling) on diverse text corpora using the cross-entropy loss. This self-supervised objective requires no labeling and scales naturally with more data. Pre-training at the scale of GPT-4 or Claude requires thousands of A100/H100 GPUs over months of compute, costing tens to hundreds of millions of dollars.
+
+After pre-training, models undergo supervised fine-tuning (SFT) on high-quality instruction-following demonstrations. Reinforcement Learning from Human Feedback (RLHF) uses human preference data to train a reward model, which then guides further fine-tuning via PPO. Direct Preference Optimization (DPO) simplifies this by directly fine-tuning on preference pairs without a separate reward model.
+
+Mixture of Experts (MoE)
+
+Mixture of Experts (MoE) architecture routes each token to a subset of specialized sub-networks (experts), activating only a fraction of total parameters per forward pass. GPT-4 and Mixtral use MoE to achieve large capacity with reduced per-token compute. A router network determines which experts to activate for each token. MoE models can be 10-20x larger than dense models at the same inference cost, but require significantly more GPU memory to load all expert weights.
+
+Claude's Architecture and Design Philosophy
+
+Claude is Anthropic's family of AI assistants, trained with Constitutional AI (CAI) to be helpful, harmless, and honest. Claude models are trained using a combination of supervised learning from human demonstrations and reinforcement learning with an AI-generated feedback process. Anthropic emphasizes interpretability research alongside capability development, including mechanistic interpretability work to understand superposition, circuits, and features in transformer models. The Claude 4 family includes Haiku (fast and lightweight), Sonnet (balanced), and Opus (most capable), each optimized for different cost-latency-quality trade-offs.
+
+Inference Optimization
+
+Speculative decoding uses a small draft model to generate candidate tokens that are verified in parallel by the larger target model, yielding 2-3× speedups with identical outputs. KV-caching avoids recomputing attention keys and values for prompt tokens on subsequent generation steps. Continuous batching (dynamic batching) interleaves requests at the token level to maximize GPU utilization. Quantization (INT8, INT4, GPTQ, AWQ) reduces model memory footprint and speeds up matrix multiplications at a small accuracy cost.

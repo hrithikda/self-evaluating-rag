@@ -1,0 +1,29 @@
+Retrieval-Augmented Generation (RAG) Systems
+
+Retrieval-Augmented Generation (RAG) is an AI framework that enhances large language models by retrieving relevant documents from an external knowledge base before generating a response. Introduced in a 2020 Facebook AI paper, RAG combines the parametric knowledge stored in an LLM's weights with non-parametric retrieval from a document store. This hybrid approach grounds responses in verifiable external information and reduces hallucinations.
+
+How Standard RAG Works
+
+A standard RAG pipeline consists of two main phases: indexing and retrieval-generation. During indexing, source documents are chunked into smaller passages, embedded using a text encoder, and stored in a vector database. During inference, the user's query is embedded using the same encoder, and the nearest neighbor search retrieves the top-k most similar document chunks. These chunks are concatenated into a prompt context and passed to the LLM for generation.
+
+The quality of RAG depends critically on retrieval quality. If the wrong documents are retrieved, the LLM either hallucinates or refuses to answer. Chunking strategy (size, overlap, semantic vs. fixed-size) significantly impacts recall. Common vector databases used with RAG include ChromaDB, FAISS, Pinecone, Weaviate, and Qdrant.
+
+Corrective RAG (CRAG)
+
+Corrective RAG, introduced in the paper "Corrective Retrieval Augmented Generation" (Shi et al., 2024), adds a self-evaluation layer to standard RAG. The key innovation is an automatic knowledge refinement process that assesses the relevance of retrieved documents and dynamically corrects retrieval when documents are deemed irrelevant. When the retriever returns low-confidence documents, CRAG triggers a web search to supplement or replace local context.
+
+The CRAG pipeline contains a retrieval evaluator that scores each retrieved document on a continuous scale. If the average score exceeds a threshold (e.g., 0.6), the system proceeds with local context. If the score falls below the threshold, the system triggers a live web search using APIs such as Tavily, Serper, or DuckDuckGo. After retrieval from either source, a decompose-and-recompose step filters irrelevant information to produce clean, targeted context.
+
+Decompose-and-Recompose Filtering
+
+The decompose-and-recompose technique in CRAG breaks each retrieved document into fine-grained knowledge strips (typically individual sentences or short phrases). A relevance evaluator then scores each strip against the original query. Strips that fall below a relevance threshold are discarded. The remaining strips are concatenated to form the cleaned context passed to the final generation step. This technique is especially valuable when web search returns noisy documents that contain relevant facts buried within irrelevant content.
+
+Advanced RAG Techniques
+
+Hypothetical Document Embeddings (HyDE) generates a hypothetical answer to the query and uses it for retrieval, improving recall when the query and relevant documents use different terminology. Multi-query RAG generates multiple paraphrased versions of the query to improve coverage. Parent-document retrieval uses small chunks for retrieval but passes the full parent document to the LLM for better context. Self-RAG is an approach where the LLM learns to decide when to retrieve, critique retrieved passages, and score its own outputs.
+
+Agentic RAG extends RAG into a multi-step reasoning framework where the model can iteratively refine its queries, choose retrieval tools, and chain multiple retrieval-generation steps together. LangGraph and LlamaIndex's workflow abstractions are commonly used to build agentic RAG systems with stateful, conditional pipelines.
+
+Evaluation of RAG Systems
+
+RAGAS (Retrieval-Augmented Generation Assessment) is an open-source framework for evaluating RAG pipelines without labeled ground truth. It measures faithfulness (are claims grounded in context?), answer relevance (does the answer address the question?), context precision (is retrieved context relevant?), and context recall (does context cover the ground truth?). These metrics use an LLM as a judge, comparing the answer against the provided context and the original question.

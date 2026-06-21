@@ -1,0 +1,35 @@
+Vector Databases and Approximate Nearest Neighbor Search
+
+Vector databases are purpose-built data stores optimized for storing and querying high-dimensional embedding vectors. They are a foundational component of modern AI systems, enabling semantic search, recommendation systems, and retrieval-augmented generation (RAG) pipelines. Unlike relational databases that search by exact value matching, vector databases find semantically similar items by measuring distance in embedding space.
+
+Approximate Nearest Neighbor (ANN) Algorithms
+
+Finding the exact nearest neighbor in high-dimensional spaces requires comparing a query vector to every stored vector — this is computationally prohibitive at scale. Approximate Nearest Neighbor (ANN) algorithms trade a small accuracy loss for dramatic speed improvements. Key ANN algorithms include:
+
+HNSW (Hierarchical Navigable Small World): Constructs a multi-layer graph where each layer is a random subset of nodes from the layer below. Search starts at the top layer (fewest nodes) and greedily navigates toward the query vector, descending to lower layers for refinement. HNSW achieves excellent recall at high query throughput and is the default algorithm in ChromaDB, Qdrant, and Weaviate.
+
+FAISS (Facebook AI Similarity Search): An open-source library from Meta offering multiple index types including Flat (exact brute-force), IVF (inverted file index that partitions the space into Voronoi cells), and PQ (product quantization that compresses vectors). FAISS is highly optimized for GPU acceleration and large-scale batch search.
+
+ScaNN (Scalable Nearest Neighbors): Google's ANN library optimizes for anisotropic quantization and is used internally at Google. DiskANN (Microsoft) enables billion-scale search with SSD-based indexing, making ANN search feasible on commodity hardware for very large datasets.
+
+ChromaDB
+
+ChromaDB is an open-source embedding database designed specifically for AI applications. It is lightweight, embeddable (runs in-process with no server required), and supports both ephemeral (in-memory) and persistent (on-disk) storage. ChromaDB provides Python and JavaScript clients and integrates natively with LangChain, LlamaIndex, and other AI frameworks.
+
+ChromaDB uses HNSW for ANN search and SQLite for metadata storage. It supports distance metrics including cosine similarity, L2 distance, and inner product. ChromaDB's collection abstraction maps directly to a vector index plus associated metadata. Filtering on metadata is supported at query time via a flexible JSON-based filter syntax.
+
+Pinecone
+
+Pinecone is a managed, cloud-native vector database-as-a-service. It handles infrastructure, scaling, and replication automatically, making it suitable for production deployments without operational overhead. Pinecone supports real-time index updates (upsert operations), sparse-dense hybrid search (combining BM25 keyword relevance with semantic similarity), and namespace-based multi-tenancy. Its hosted nature means zero infrastructure management but introduces vendor lock-in and ongoing costs.
+
+Weaviate
+
+Weaviate is an open-source vector database with a GraphQL-based query interface. It supports multi-modal data (text, images), generative search (directly querying an LLM from within the vector search pipeline), and hybrid search combining BM25 and vector similarity. Weaviate uses HNSW for vector indexing and provides modules for direct integration with OpenAI, Cohere, and Hugging Face embedding models.
+
+Qdrant
+
+Qdrant is a high-performance, Rust-based vector database that supports named vectors (multiple vector spaces per record), payload-based filtering, and on-the-fly quantization (scalar, product, and binary quantization). Qdrant's filtering system is highly optimized and integrated with the HNSW graph traversal, avoiding the post-filtering bottleneck common in other systems.
+
+Embedding Models
+
+The quality of a vector database depends heavily on the embedding model. For text, sentence-transformers models like all-MiniLM-L6-v2 (384 dimensions, fast, small) and all-mpnet-base-v2 (768 dimensions, higher quality) are popular open-source choices. OpenAI's text-embedding-3-large (3072 dimensions) and Cohere's embed-v3 achieve state-of-the-art performance on MTEB benchmarks. For code, CodeBERT and voyage-code-2 are commonly used. For multi-modal RAG, CLIP embeddings encode both images and text in a shared space, enabling image-text retrieval.
