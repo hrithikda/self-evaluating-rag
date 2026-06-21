@@ -3,8 +3,8 @@ FastAPI application exposing the Adaptive RAG pipeline.
 
 Endpoints
 ---------
-GET  /health          — liveness + collection stats
-POST /query           — run full CRAG pipeline
+GET  /health          — liveness + LangSmith status
+POST /query           — full CRAG pipeline with optional chat history
 POST /ingest          — add documents to ChromaDB
 GET  /collection/info — vector store metadata
 """
@@ -15,9 +15,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from api.schemas import (
+    ChatMessage,
     HealthResponse,
     IngestRequest,
     IngestResponse,
@@ -27,12 +27,12 @@ from api.schemas import (
 )
 from src.config import settings
 from src.ingestion.vectorstore import add_documents, collection_size, get_vectorstore
+from src.observability import langsmith_enabled, log_outcome, make_run_config
 from src.pipeline.graph import build_graph, make_initial_state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger(__name__)
 
-# Pre-build graph once at startup
 _graph = None
 
 
@@ -40,9 +40,13 @@ _graph = None
 async def lifespan(app: FastAPI):
     global _graph
     logger.info("Warming up vector store and LangGraph…")
-    get_vectorstore()        # loads ChromaDB + embeddings
-    _graph = build_graph()   # compiles LangGraph DAG
-    logger.info("Ready. Collection size: %d", collection_size())
+    get_vectorstore()
+    _graph = build_graph()
+    logger.info(
+        "Ready. Collection size: %d | LangSmith: %s",
+        collection_size(),
+        "enabled" if langsmith_enabled() else "disabled",
+    )
     yield
     logger.info("Shutting down.")
 
@@ -50,10 +54,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Adaptive RAG API",
     description=(
-        "Corrective RAG pipeline: ChromaDB retrieval → LLM relevance scoring → "
-        "conditional Tavily web fallback → decompose-recompose filtering → Claude generation."
+        "Corrective RAG: ChromaDB → cross-encoder rerank → LLM relevance scoring → "
+        "conditional Tavily web fallback → decompose-recompose → Claude generation. "
+        "Supports multi-turn conversation via chat_history."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -65,11 +70,6 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 def health():
     return HealthResponse(
@@ -77,6 +77,7 @@ def health():
         collection_size=collection_size(),
         model=settings.llm_model,
         threshold=settings.relevance_threshold,
+        langsmith_enabled=langsmith_enabled(),
     )
 
 
@@ -89,7 +90,6 @@ def collection_info():
 
 @app.post("/query", response_model=QueryResponse, tags=["pipeline"])
 def query(request: QueryRequest):
-    # Allow per-request threshold/top_k overrides
     original_threshold = settings.relevance_threshold
     original_top_k = settings.top_k
 
@@ -98,11 +98,29 @@ def query(request: QueryRequest):
     if request.top_k is not None:
         settings.top_k = request.top_k
 
+    history = [ChatMessage(role=m.role, content=m.content) for m in request.chat_history]
+    run_config = make_run_config(
+        request.query,
+        threshold=settings.relevance_threshold,
+        source="api",
+        history_turns=len(history),
+    )
+
     try:
         t0 = time.perf_counter()
-        state = _graph.invoke(make_initial_state(request.query))
+        initial = make_initial_state(
+            request.query,
+            chat_history=[{"role": m.role, "content": m.content} for m in history],
+        )
+        state = _graph.invoke(initial, config=run_config)
         elapsed = time.perf_counter() - t0
-        logger.info("Query processed in %.2fs (web=%s)", elapsed, state["web_search_triggered"])
+        logger.info(
+            "Query in %.2fs | web=%s | avg_rel=%.2f",
+            elapsed,
+            state["web_search_triggered"],
+            state["avg_relevance"],
+        )
+        log_outcome(run_config, state)
     except Exception as exc:
         logger.exception("Pipeline error")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -110,15 +128,20 @@ def query(request: QueryRequest):
         settings.relevance_threshold = original_threshold
         settings.top_k = original_top_k
 
-    sources = [SourceDoc(**s) for s in state["sources"]]
+    # Return updated history so stateless clients can carry it forward
+    updated_history = list(history) + [
+        ChatMessage(role="user", content=request.query),
+        ChatMessage(role="assistant", content=state["answer"]),
+    ]
 
     return QueryResponse(
         query=request.query,
         answer=state["answer"],
         web_search_triggered=state["web_search_triggered"],
         avg_relevance_score=state["avg_relevance"],
-        sources=sources,
+        sources=[SourceDoc(**s) for s in state["sources"]],
         pipeline_log=state["pipeline_log"],
+        updated_history=updated_history,
     )
 
 
@@ -126,11 +149,9 @@ def query(request: QueryRequest):
 def ingest(request: IngestRequest):
     if not request.texts:
         raise HTTPException(status_code=400, detail="texts list is empty")
-
     try:
         ids = add_documents(request.texts, request.metadatas)
     except Exception as exc:
         logger.exception("Ingest error")
         raise HTTPException(status_code=500, detail=str(exc))
-
     return IngestResponse(added=len(ids), collection_size=collection_size())

@@ -1,11 +1,10 @@
 """
-Adaptive RAG — Streamlit demo
+Adaptive RAG — Streamlit demo (v2: chat interface + reranker + LangSmith)
 
 Run:
     streamlit run app.py
 """
 
-import json
 import sys
 import time
 from pathlib import Path
@@ -16,7 +15,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Page config (must be first Streamlit call)
+# Page config
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -26,360 +25,306 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Custom CSS
-# ─────────────────────────────────────────────────────────────────────────────
-
 st.markdown(
     """
 <style>
-/* Pipeline step cards */
-.step-card {
-    border-left: 4px solid #4ade80;
-    padding: 10px 14px;
-    margin: 6px 0;
-    background: rgba(74,222,128,0.06);
-    border-radius: 0 8px 8px 0;
-    font-size: 0.9rem;
-}
-.step-card.warning {
-    border-left-color: #facc15;
-    background: rgba(250,204,21,0.06);
-}
-.step-card.info {
-    border-left-color: #60a5fa;
-    background: rgba(96,165,250,0.06);
-}
-
-/* Badge styles */
-.badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-}
-.badge-local { background: #dcfce7; color: #166534; }
-.badge-web   { background: #fef3c7; color: #92400e; }
-
-/* Answer box */
-.answer-box {
-    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 20px 24px;
-    color: #f1f5f9;
-    line-height: 1.7;
-    margin-top: 8px;
-}
-
-/* Metric pill */
-.metric-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 0.85rem;
-    font-weight: 500;
-}
+.step-done  { border-left:4px solid #4ade80; background:rgba(74,222,128,.06);
+              padding:8px 14px; margin:4px 0; border-radius:0 8px 8px 0; font-size:.88rem; }
+.step-web   { border-left:4px solid #facc15; background:rgba(250,204,21,.08);
+              padding:8px 14px; margin:4px 0; border-radius:0 8px 8px 0; font-size:.88rem; }
+.step-pend  { border-left:4px solid #475569; background:rgba(71,85,105,.06);
+              padding:8px 14px; margin:4px 0; border-radius:0 8px 8px 0;
+              font-size:.88rem; color:#64748b; }
+.badge-local{ display:inline-block; padding:2px 10px; border-radius:12px;
+              background:#dcfce7; color:#166534; font-size:.78rem; font-weight:600; }
+.badge-web  { display:inline-block; padding:2px 10px; border-radius:12px;
+              background:#fef3c7; color:#92400e; font-size:.78rem; font-weight:600; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Session state initialisation
 # ─────────────────────────────────────────────────────────────────────────────
 
-
-@st.cache_resource(show_spinner="Loading pipeline (first run may take ~30s)…")
-def load_pipeline():
-    from src.ingestion.vectorstore import collection_size, get_vectorstore
-    from src.pipeline.graph import build_graph
-
-    get_vectorstore()   # warm up ChromaDB + embeddings
-    graph = build_graph()
-    size = collection_size()
-    return graph, size
-
-
-def make_relevance_chart(documents: list[dict], threshold: float) -> go.Figure:
-    if not documents:
-        return None
-
-    names = [f"Doc {i + 1}" for i in range(len(documents))]
-    scores = [d.get("relevance_score") or 0.0 for d in documents]
-    colors = ["#4ade80" if s >= threshold else "#f87171" for s in scores]
-
-    fig = go.Figure(
-        go.Bar(
-            x=names,
-            y=scores,
-            marker_color=colors,
-            text=[f"{s:.2f}" for s in scores],
-            textposition="outside",
-            hovertemplate="<b>%{x}</b><br>Score: %{y:.3f}<extra></extra>",
-        )
-    )
-    fig.add_hline(
-        y=threshold,
-        line_dash="dash",
-        line_color="#facc15",
-        annotation_text=f"Threshold ({threshold})",
-        annotation_position="top right",
-    )
-    fig.update_layout(
-        title="Document Relevance Scores",
-        yaxis=dict(range=[0, 1.15], title="Relevance"),
-        xaxis_title="Retrieved Documents",
-        showlegend=False,
-        height=280,
-        margin=dict(l=20, r=20, t=40, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#94a3b8"),
-    )
-    return fig
-
-
-def run_pipeline(graph, query: str, threshold: float, top_k: int) -> dict:
-    from src.config import settings
-    from src.pipeline.graph import make_initial_state
-
-    # Temporarily override settings for this request
-    _orig_threshold = settings.relevance_threshold
-    _orig_top_k = settings.top_k
-    settings.relevance_threshold = threshold
-    settings.top_k = top_k
-
-    try:
-        state_parts = make_initial_state(query).copy()
-        state_parts["pipeline_log"] = []
-
-        for chunk in graph.stream(state_parts, stream_mode="updates"):
-            for node_name, update in chunk.items():
-                for k, v in update.items():
-                    if k == "pipeline_log":
-                        state_parts[k] = state_parts.get(k, []) + v
-                    elif v is not None:
-                        state_parts[k] = v
-    finally:
-        settings.relevance_threshold = _orig_threshold
-        settings.top_k = _orig_top_k
-
-    return state_parts
-
+if "messages" not in st.session_state:
+    st.session_state.messages = []          # displayed chat bubbles
+if "pipeline_history" not in st.session_state:
+    st.session_state.pipeline_history = []  # RAG chat_history for the pipeline
+if "last_pipeline_state" not in st.session_state:
+    st.session_state.last_pipeline_state = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## ⚙️ Pipeline Settings")
+    st.markdown("## ⚙️ Settings")
 
-    threshold = st.slider(
-        "Relevance threshold",
-        min_value=0.1, max_value=0.9, value=0.6, step=0.05,
-        help="If avg doc score < threshold, web search is triggered",
-    )
-    top_k = st.slider(
-        "Documents to retrieve (k)",
-        min_value=1, max_value=10, value=5,
-    )
+    threshold = st.slider("Relevance threshold", 0.1, 0.9, 0.6, 0.05,
+                          help="Below this → Tavily web search triggered")
+    top_k = st.slider("Retrieve top-k", 1, 10, 5)
+
+    show_pipeline = st.toggle("Show pipeline details", value=True)
 
     st.divider()
     st.markdown("## 📂 Ingest Documents")
-    uploaded = st.file_uploader(
-        "Upload .txt or .pdf files",
-        type=["txt", "pdf"],
-        accept_multiple_files=True,
-    )
-    if uploaded and st.button("Ingest uploaded files", type="primary"):
+    uploaded = st.file_uploader("Upload .txt / .pdf", type=["txt", "pdf"],
+                                accept_multiple_files=True)
+    if uploaded and st.button("Ingest", type="primary"):
+        from langchain_core.documents import Document
         from src.ingestion.loader import split_documents
         from src.ingestion.vectorstore import add_documents
-        from langchain_core.documents import Document
 
-        raw = []
-        for f in uploaded:
-            text = f.read().decode("utf-8", errors="ignore")
-            raw.append(Document(page_content=text, metadata={"filename": f.name}))
-
-        from src.ingestion.loader import split_documents
+        raw = [
+            Document(page_content=f.read().decode("utf-8", errors="ignore"),
+                     metadata={"filename": f.name})
+            for f in uploaded
+        ]
         chunks = split_documents(raw)
-        ids = add_documents([c.page_content for c in chunks], [c.metadata for c in chunks])
-        st.success(f"Indexed {len(ids)} chunks from {len(uploaded)} file(s).")
+        ids = add_documents([c.page_content for c in chunks],
+                            [c.metadata for c in chunks])
+        st.success(f"Indexed {len(ids)} chunks.")
 
     st.divider()
-    st.markdown("## ℹ️ About")
-    st.caption(
-        "Corrective RAG pipeline built with LangGraph + Claude. "
-        "Automatically falls back to Tavily web search when local context confidence is low."
-    )
+    if st.button("🗑 Clear conversation"):
+        st.session_state.messages = []
+        st.session_state.pipeline_history = []
+        st.session_state.last_pipeline_state = None
+        st.rerun()
+
+    st.markdown("## 🔭 Observability")
+    from src.observability import langsmith_enabled
+    if langsmith_enabled():
+        st.success("LangSmith tracing **enabled**")
+        st.caption("Every query is logged with metadata to your LangSmith project.")
+    else:
+        st.warning("LangSmith **disabled**")
+        st.caption("Set `LANGCHAIN_TRACING_V2=true` in `.env` to enable.")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main area
-# ─────────────────────────────────────────────────────────────────────────────
-
-st.markdown("# 🔍 Adaptive RAG")
-st.markdown(
-    "**Corrective Retrieval-Augmented Generation** — evaluates local context quality "
-    "before answering, and falls back to live web search when needed."
-)
-
 # Load pipeline (cached)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@st.cache_resource(show_spinner="Loading pipeline…")
+def load_pipeline():
+    from src.ingestion.vectorstore import collection_size, get_vectorstore
+    from src.pipeline.graph import build_graph
+    from src.pipeline.nodes import _get_reranker  # warm up cross-encoder
+
+    get_vectorstore()
+    graph = build_graph()
+    _get_reranker()  # download / load model on startup
+    return graph, collection_size()
+
+
 try:
     graph, doc_count = load_pipeline()
 except Exception as e:
-    st.error(f"Failed to load pipeline: {e}\n\nCheck your `.env` file and API keys.")
+    st.error(f"Failed to load pipeline: {e}\n\nCheck your `.env` API keys.")
     st.stop()
 
-# Collection status banner
-col_a, col_b, col_c = st.columns(3)
-col_a.metric("Indexed documents", doc_count)
-col_b.metric("Relevance threshold", threshold)
-col_c.metric("Retrieve top-k", top_k)
+# ─────────────────────────────────────────────────────────────────────────────
+# Header
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.markdown("# 🔍 Adaptive RAG")
+st.caption(
+    "Corrective RAG · LangGraph · ChromaDB · Cross-encoder reranker · "
+    "Tavily web fallback · Claude · LangSmith"
+)
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Indexed docs", doc_count)
+col2.metric("Threshold", threshold)
+col3.metric("Retrieve k", top_k)
+col4.metric("History turns", len(st.session_state.pipeline_history) // 2)
 
 if doc_count == 0:
-    st.warning(
-        "Vector store is empty. Run `python data/ingest.py` to load sample documents, "
-        "or upload files in the sidebar."
-    )
+    st.warning("Vector store is empty. Run `python data/ingest.py` or upload files in the sidebar.")
 
 st.divider()
 
-# Query input
-query = st.text_area(
-    "Ask a question",
-    placeholder="e.g. What is the decompose-and-recompose technique in CRAG?",
-    height=90,
-)
-
-run_btn = st.button("▶ Run Pipeline", type="primary", disabled=not query.strip())
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Pipeline execution + results
+# Pipeline detail renderer (defined before first use)
 # ─────────────────────────────────────────────────────────────────────────────
 
-if run_btn and query.strip():
-    t_start = time.perf_counter()
 
-    left, right = st.columns([3, 2])
+def _render_pipeline_details(ps: dict, thr: float) -> None:
+    with st.expander("📊 Pipeline details", expanded=False):
+        # Routing badge
+        web = ps.get("web_search_triggered", False)
+        badge = (
+            '<span class="badge-web">🌐 WEB FALLBACK</span>'
+            if web
+            else '<span class="badge-local">💾 LOCAL ONLY</span>'
+        )
+        avg = ps.get("avg_relevance", 0.0)
+        st.markdown(
+            f"{badge} &nbsp; Avg relevance: **{avg:.2f}** (threshold: {thr})",
+            unsafe_allow_html=True,
+        )
 
-    with left:
-        st.markdown("### Pipeline Execution")
+        # Relevance + rerank chart
+        docs = ps.get("documents", [])
+        if docs:
+            names = [f"Doc {i+1}" for i in range(len(docs))]
+            rel_scores = [d.get("relevance_score") or 0.0 for d in docs]
+            rerank_scores = [d.get("rerank_score") or 0.0 for d in docs]
+            colors = ["#4ade80" if s >= thr else "#f87171" for s in rel_scores]
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                name="LLM relevance", x=names, y=rel_scores,
+                marker_color=colors,
+                text=[f"{s:.2f}" for s in rel_scores],
+                textposition="outside",
+            ))
+            fig.add_trace(go.Scatter(
+                name="Rerank score", x=names, y=rerank_scores,
+                mode="markers+lines",
+                marker=dict(size=10, color="#60a5fa"),
+                line=dict(color="#60a5fa", dash="dot"),
+            ))
+            fig.add_hline(y=thr, line_dash="dash", line_color="#facc15",
+                          annotation_text=f"Threshold ({thr})")
+            fig.update_layout(
+                height=260, showlegend=True,
+                legend=dict(orientation="h", y=1.15),
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#94a3b8"),
+                yaxis=dict(range=[0, 1.2]),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Sources
+        sources = ps.get("sources", [])
+        if sources:
+            st.markdown("**Sources:**")
+            for i, src in enumerate(sources, 1):
+                icon = "🌐" if src.get("source") == "web" else "💾"
+                score_str = f"score={src['score']:.2f}" if src.get("score") else ""
+                rerank_str = f"rerank={src['rerank_score']:.2f}" if src.get("rerank_score") else ""
+                meta = " · ".join(filter(None, [score_str, rerank_str]))
+                header = f"{icon} **Source {i}** {meta}"
+                if src.get("url"):
+                    header += f" — [{src.get('title', src['url'])}]({src['url']})"
+                st.caption(header)
+                st.caption(src.get("content_preview", "")[:300])
+
+        # Pipeline log
+        logs = ps.get("pipeline_log", [])
+        if logs:
+            st.markdown("**Pipeline log:**")
+            for entry in logs:
+                st.code(entry, language=None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chat history display
+# ─────────────────────────────────────────────────────────────────────────────
+
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if msg["role"] == "assistant" and show_pipeline and msg.get("pipeline_state"):
+            _render_pipeline_details(msg["pipeline_state"], threshold)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chat input + pipeline execution
+# ─────────────────────────────────────────────────────────────────────────────
+
+if query := st.chat_input("Ask a question…"):
+    # Show user message
+    st.session_state.messages.append({"role": "user", "content": query})
+    with st.chat_message("user"):
+        st.markdown(query)
+
+    # Run pipeline with streaming step cards
+    with st.chat_message("assistant"):
+        from src.config import settings
+        from src.observability import make_run_config
+        from src.pipeline.graph import make_initial_state
 
         node_labels = {
-            "retrieve": "Node 1 · Retrieve",
-            "evaluate_relevance": "Node 2 · Evaluate Relevance",
-            "web_search": "Node 3 · Web Search (Tavily)",
-            "filter_context": "Node 4 · Decompose & Recompose",
-            "generate": "Node 5 · Generate",
+            "retrieve": "Node 1 · Retrieve (ChromaDB)",
+            "rerank": "Node 2 · Cross-encoder Rerank",
+            "evaluate_relevance": "Node 3 · LLM Relevance Scoring",
+            "web_search": "Node 4 · Web Search (Tavily)",
+            "filter_context": "Node 5 · Decompose & Recompose",
+            "generate": "Node 6 · Generate (Claude)",
         }
 
-        step_placeholders = {k: st.empty() for k in node_labels}
-        for k, label in node_labels.items():
-            step_placeholders[k].markdown(
-                f'<div class="step-card info">⏳ {label} <span style="color:#60a5fa">pending…</span></div>',
-                unsafe_allow_html=True,
-            )
+        if show_pipeline:
+            step_slots = {k: st.empty() for k in node_labels}
+            for k, label in node_labels.items():
+                step_slots[k].markdown(
+                    f'<div class="step-pend">⏳ {label}</div>',
+                    unsafe_allow_html=True,
+                )
 
-        from src.pipeline.graph import make_initial_state
-        from src.config import settings
+        answer_slot = st.empty()
 
-        _orig_threshold = settings.relevance_threshold
-        _orig_top_k = settings.top_k
+        _orig_thr = settings.relevance_threshold
+        _orig_k = settings.top_k
         settings.relevance_threshold = threshold
         settings.top_k = top_k
 
-        state = make_initial_state(query)
+        state = make_initial_state(query, chat_history=st.session_state.pipeline_history)
         state["pipeline_log"] = []
 
+        run_cfg = make_run_config(
+            query,
+            threshold=threshold,
+            source="streamlit",
+            history_turns=len(st.session_state.pipeline_history) // 2,
+        )
+
+        t0 = time.perf_counter()
         try:
-            for chunk in graph.stream(state, stream_mode="updates"):
+            for chunk in graph.stream(state, stream_mode="updates", config=run_cfg):
                 for node_name, update in chunk.items():
+                    # Merge into local state
                     for k, v in update.items():
                         if k == "pipeline_log":
                             state[k] = state.get(k, []) + (v or [])
                         elif v is not None:
                             state[k] = v
 
-                    # Update the corresponding step card
-                    logs = update.get("pipeline_log", [])
-                    msg = logs[0] if logs else f"{node_name} complete"
-                    label = node_labels.get(node_name, node_name)
-
-                    if "web_search" in node_name and update.get("web_search_triggered"):
-                        css = "warning"
-                    else:
-                        css = "step-card"
-
-                    step_placeholders[node_name].markdown(
-                        f'<div class="step-card {css}">✓ {label}<br>'
-                        f'<small style="color:#94a3b8">{msg}</small></div>',
-                        unsafe_allow_html=True,
-                    )
+                    if show_pipeline and node_name in step_slots:
+                        logs = update.get("pipeline_log", [])
+                        msg = logs[0] if logs else f"{node_name} complete"
+                        css = "step-web" if (node_name == "web_search") else "step-done"
+                        step_slots[node_name].markdown(
+                            f'<div class="{css}">✓ {node_labels.get(node_name, node_name)}'
+                            f'<br><small style="color:#94a3b8">{msg}</small></div>',
+                            unsafe_allow_html=True,
+                        )
         finally:
-            settings.relevance_threshold = _orig_threshold
-            settings.top_k = _orig_top_k
+            settings.relevance_threshold = _orig_thr
+            settings.top_k = _orig_k
 
-        elapsed = time.perf_counter() - t_start
+        elapsed = time.perf_counter() - t0
+        answer = state.get("answer", "No answer generated.")
+        answer_slot.markdown(answer)
 
-    # Right panel — metrics + relevance chart
-    with right:
-        st.markdown("### Retrieval Metrics")
+        if show_pipeline:
+            _render_pipeline_details(state, threshold)
 
-        web_triggered = state.get("web_search_triggered", False)
-        avg_rel = state.get("avg_relevance", 0.0)
+        st.caption(f"⏱ {elapsed:.1f}s · avg relevance {state.get('avg_relevance', 0):.2f}")
 
-        routing_badge = (
-            '<span class="badge badge-web">🌐 WEB FALLBACK</span>'
-            if web_triggered
-            else '<span class="badge badge-local">💾 LOCAL ONLY</span>'
-        )
-        st.markdown(f"**Routing decision:** {routing_badge}", unsafe_allow_html=True)
-        st.metric("Avg relevance score", f"{avg_rel:.2f}", delta=f"{avg_rel - threshold:+.2f} vs threshold")
-        st.metric("Pipeline latency", f"{elapsed:.1f}s")
-        st.metric("Sources used", f"{len(state.get('documents', []))} local + {len(state.get('web_documents', []))} web")
+    # Persist to session state
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": answer,
+        "pipeline_state": state,
+    })
 
-        fig = make_relevance_chart(state.get("documents", []), threshold)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    # Answer
-    st.markdown("### Answer")
-    answer = state.get("answer", "No answer generated.")
-    st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
-
-    # Pipeline log
-    with st.expander("🔎 Pipeline log", expanded=False):
-        for entry in state.get("pipeline_log", []):
-            st.code(entry, language=None)
-
-    # Sources
-    sources = state.get("sources", [])
-    if sources:
-        with st.expander(f"📚 Sources ({len(sources)})", expanded=False):
-            for i, src in enumerate(sources, 1):
-                badge = "🌐 Web" if src.get("source") == "web" else "💾 Local"
-                score_str = f" · score={src['score']:.2f}" if src.get("score") else ""
-                header = f"**{badge} Source {i}**{score_str}"
-                if src.get("url"):
-                    header += f" — [{src.get('title', src['url'])}]({src['url']})"
-                st.markdown(header)
-                st.caption(src.get("content_preview", "")[:400])
-                if i < len(sources):
-                    st.divider()
-
-    # Pipeline log for copy
-    st.divider()
-    st.markdown("### Full Pipeline State (JSON)")
-    with st.expander("View raw state", expanded=False):
-        safe_state = {
-            k: v for k, v in state.items()
-            if k not in ("filtered_context",) and not (isinstance(v, list) and len(str(v)) > 3000)
-        }
-        st.json(safe_state)
+    # Update pipeline conversation history for next turn
+    st.session_state.pipeline_history.append({"role": "user", "content": query})
+    st.session_state.pipeline_history.append({"role": "assistant", "content": answer})
+    st.session_state.last_pipeline_state = state

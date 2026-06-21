@@ -2,13 +2,14 @@
 LangGraph node implementations for the Adaptive RAG pipeline.
 
 Pipeline flow:
-  retrieve → evaluate_relevance → [web_search →] filter_context → generate
+  retrieve → rerank → evaluate_relevance → [web_search →] filter_context → generate
 """
 
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
+import numpy as np
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -18,6 +19,19 @@ from src.ingestion.vectorstore import get_vectorstore
 from src.pipeline.state import RAGState
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cross-encoder re-ranker (loaded once, lives in process memory)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def _get_reranker():
+    from sentence_transformers import CrossEncoder
+
+    logger.info("Loading cross-encoder reranker (first call only)…")
+    return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +110,58 @@ def retrieve_node(state: RAGState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Node 2: Evaluate relevance with LLM
+# Node 2: Cross-encoder re-ranking (local, no API call)
+# ---------------------------------------------------------------------------
+
+
+def rerank_node(state: RAGState) -> dict:
+    """
+    Re-score documents with a cross-encoder that sees the (query, doc) pair —
+    unlike embedding similarity which compares independently encoded vectors.
+    Cross-encoders capture fine-grained semantic interactions and produce
+    significantly better relevance signals, especially for short queries.
+    """
+    query = state["query"]
+    documents = state["documents"]
+
+    if not documents:
+        return {
+            "documents": [],
+            "pipeline_log": ["[RERANK] No documents to re-rank"],
+        }
+
+    try:
+        reranker = _get_reranker()
+        pairs = [(query, doc["content"][:512]) for doc in documents]
+        raw_scores: np.ndarray = reranker.predict(pairs)
+
+        # Sigmoid-normalize raw logits to [0, 1] for interpretable display
+        normalized = (1 / (1 + np.exp(-raw_scores))).tolist()
+
+        # Attach rerank score and sort documents best-first
+        for doc, score in zip(documents, normalized):
+            doc["rerank_score"] = round(float(score), 4)
+
+        documents = sorted(documents, key=lambda d: d["rerank_score"], reverse=True)
+        top_scores = [f"{d['rerank_score']:.2f}" for d in documents]
+
+        return {
+            "documents": documents,
+            "pipeline_log": [
+                f"[RERANK] Cross-encoder scores (best-first): {top_scores}"
+            ],
+        }
+
+    except Exception as exc:
+        logger.warning("Reranker failed (%s) — using original retrieval order", exc)
+        return {
+            "documents": documents,
+            "pipeline_log": [f"[RERANK] Skipped (model unavailable): {exc}"],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Node 3: Evaluate relevance with LLM
 # ---------------------------------------------------------------------------
 
 
@@ -308,6 +373,7 @@ def filter_context_node(state: RAGState) -> dict:
 def generate_node(state: RAGState) -> dict:
     query = state["query"]
     context = state["filtered_context"]
+    chat_history = state.get("chat_history") or []
 
     # Build structured source list for attribution
     sources: list[dict] = []
@@ -317,6 +383,7 @@ def generate_node(state: RAGState) -> dict:
                 "content_preview": doc["content"][:300],
                 "source": "local",
                 "score": doc.get("relevance_score"),
+                "rerank_score": doc.get("rerank_score"),
                 "reason": doc.get("relevance_reason", ""),
                 "metadata": doc.get("metadata", {}),
             }
@@ -334,17 +401,29 @@ def generate_node(state: RAGState) -> dict:
 
     gen_llm = _llm(temperature=0.1)
 
+    # Build conversation history block for multi-turn context
+    history_block = ""
+    if chat_history:
+        lines = []
+        for msg in chat_history[-6:]:  # keep last 3 turns (6 messages)
+            role = "User" if msg["role"] == "user" else "Assistant"
+            lines.append(f"{role}: {msg['content']}")
+        history_block = "Previous conversation:\n" + "\n".join(lines) + "\n\n"
+
     web_note = (
-        "\nNote: Local context was insufficient; web search results were incorporated."
+        "Note: Local knowledge base had insufficient context — web search results "
+        "were incorporated.\n\n"
         if state.get("web_search_triggered")
         else ""
     )
 
     prompt = (
-        f"You are a precise, expert AI assistant.{web_note}\n\n"
+        f"You are a precise, expert AI assistant.\n\n"
+        f"{web_note}"
+        f"{history_block}"
         f"Answer the following question using ONLY the provided context. "
         f"Be comprehensive but concise. "
-        f"If context is insufficient to fully answer, state that clearly.\n\n"
+        f"If context is insufficient to fully answer, say so clearly.\n\n"
         f"Question: {query}\n\n"
         f"Context:\n{context[:5000]}\n\n"
         f"Answer:"
@@ -357,11 +436,14 @@ def generate_node(state: RAGState) -> dict:
         logger.error("Generation failed: %s", exc)
         answer = f"Generation failed: {exc}"
 
+    history_note = f" | {len(chat_history)} prior turns in context" if chat_history else ""
+
     return {
         "answer": answer,
         "sources": sources,
         "pipeline_log": [
             f"[GENERATE] Answer produced using "
             f"{'local + web' if state.get('web_search_triggered') else 'local'} context"
+            f"{history_note}"
         ],
     }

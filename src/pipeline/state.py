@@ -2,11 +2,17 @@ import operator
 from typing import Annotated, TypedDict
 
 
+class ChatMessage(TypedDict):
+    role: str     # "user" | "assistant"
+    content: str
+
+
 class RAGState(TypedDict):
     """Full state passed between LangGraph nodes."""
 
     # Input
     query: str
+    chat_history: list[ChatMessage]   # previous turns, passed in by caller
 
     # Retrieval (ChromaDB)
     documents: list[dict]

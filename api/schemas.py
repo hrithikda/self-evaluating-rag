@@ -1,22 +1,32 @@
 from pydantic import BaseModel, Field
 
 
+class ChatMessage(BaseModel):
+    role: str    # "user" | "assistant"
+    content: str
+
+
 class QueryRequest(BaseModel):
-    query: str = Field(..., min_length=3, max_length=2000, description="Natural language question")
+    query: str = Field(..., min_length=3, max_length=2000)
+    chat_history: list[ChatMessage] = Field(
+        default_factory=list,
+        description="Previous conversation turns for multi-turn context",
+    )
     relevance_threshold: float | None = Field(
         default=None, ge=0.0, le=1.0,
-        description="Override default threshold (0.6). Lower = more likely to trigger web search.",
+        description="Override default threshold (0.6). Lower = more web search.",
     )
     top_k: int | None = Field(
         default=None, ge=1, le=20,
-        description="Number of documents to retrieve from ChromaDB",
+        description="Documents to retrieve from ChromaDB",
     )
 
 
 class SourceDoc(BaseModel):
-    source: str                  # "local" | "web"
+    source: str
     content_preview: str
     score: float | None = None
+    rerank_score: float | None = None
     reason: str | None = None
     url: str | None = None
     title: str | None = None
@@ -29,11 +39,13 @@ class QueryResponse(BaseModel):
     avg_relevance_score: float
     sources: list[SourceDoc]
     pipeline_log: list[str]
+    # Return updated history so stateless clients can carry it forward
+    updated_history: list[ChatMessage]
 
 
 class IngestRequest(BaseModel):
-    texts: list[str] = Field(..., min_length=1, description="Raw text chunks to add")
-    metadatas: list[dict] | None = Field(default=None, description="Optional metadata per chunk")
+    texts: list[str] = Field(..., min_length=1)
+    metadatas: list[dict] | None = None
 
 
 class IngestResponse(BaseModel):
@@ -46,3 +58,4 @@ class HealthResponse(BaseModel):
     collection_size: int
     model: str
     threshold: float
+    langsmith_enabled: bool
